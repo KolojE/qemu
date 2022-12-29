@@ -75,7 +75,7 @@ QEMU_EXTERN_C int daemon(int, int);
 #ifdef _WIN32
 /* as defined in sdkddkver.h */
 #ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0600 /* Vista */
+#define _WIN32_WINNT 0x0601 /* Windows 7 API (should be in sync with glib) */
 #endif
 /* reduces the number of implicitly included headers */
 #ifndef WIN32_LEAN_AND_MEAN
@@ -185,6 +185,14 @@ void QEMU_ERROR("code path is reachable")
 #else
 #define qemu_build_not_reached()  g_assert_not_reached()
 #endif
+
+/**
+ * qemu_build_assert()
+ *
+ * The compiler, during optimization, is expected to prove that the
+ * assertion is true.
+ */
+#define qemu_build_assert(test)  while (!(test)) qemu_build_not_reached()
 
 /*
  * According to waitpid man page:
@@ -547,10 +555,6 @@ static inline void qemu_timersub(const struct timeval *val1,
 ssize_t qemu_write_full(int fd, const void *buf, size_t count)
     G_GNUC_WARN_UNUSED_RESULT;
 
-#ifndef _WIN32
-int qemu_pipe(int pipefd[2]);
-#endif
-
 void qemu_set_cloexec(int fd);
 
 /* Return a dynamically allocated directory path that is appropriate for storing
@@ -560,14 +564,6 @@ void qemu_set_cloexec(int fd);
  * after use.
  */
 char *qemu_get_local_state_dir(void);
-
-/* Find program directory, and save it for later usage with
- * qemu_get_exec_dir().
- * Try OS specific API first, if not working, parse from argv0. */
-void qemu_init_exec_dir(const char *argv0);
-
-/* Get the saved exec dir.  */
-const char *qemu_get_exec_dir(void);
 
 /**
  * qemu_getauxval:
@@ -580,8 +576,23 @@ unsigned long qemu_getauxval(unsigned long type);
 
 void qemu_set_tty_echo(int fd, bool echo);
 
-void os_mem_prealloc(int fd, char *area, size_t sz, int smp_cpus,
-                     Error **errp);
+typedef struct ThreadContext ThreadContext;
+
+/**
+ * qemu_prealloc_mem:
+ * @fd: the fd mapped into the area, -1 for anonymous memory
+ * @area: start address of the are to preallocate
+ * @sz: the size of the area to preallocate
+ * @max_threads: maximum number of threads to use
+ * @errp: returns an error if this function fails
+ *
+ * Preallocate memory (populate/prefault page tables writable) for the virtual
+ * memory area starting at @area with the size of @sz. After a successful call,
+ * each page in the area was faulted in writable at least once, for example,
+ * after allocating file blocks for mapped files.
+ */
+void qemu_prealloc_mem(int fd, char *area, size_t sz, int max_threads,
+                       ThreadContext *tc, Error **errp);
 
 /**
  * qemu_get_pid_name:

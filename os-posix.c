@@ -39,6 +39,7 @@
 
 #ifdef CONFIG_LINUX
 #include <sys/prctl.h>
+#include "qemu/async-teardown.h"
 #endif
 
 /*
@@ -150,6 +151,11 @@ int os_parse_cmd_args(int index, const char *optarg)
     case QEMU_OPTION_daemonize:
         daemonize = 1;
         break;
+#if defined(CONFIG_LINUX)
+    case QEMU_OPTION_asyncteardown:
+        init_async_teardown();
+        break;
+#endif
     default:
         return -1;
     }
@@ -215,7 +221,7 @@ void os_daemonize(void)
         pid_t pid;
         int fds[2];
 
-        if (pipe(fds) == -1) {
+        if (!g_unix_open_pipe(fds, FD_CLOEXEC, NULL)) {
             exit(1);
         }
 
@@ -240,7 +246,6 @@ void os_daemonize(void)
 
         close(fds[0]);
         daemon_pipe = fds[1];
-        qemu_set_cloexec(daemon_pipe);
 
         setsid();
 

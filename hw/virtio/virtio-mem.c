@@ -467,7 +467,7 @@ static int virtio_mem_set_block_state(VirtIOMEM *vmem, uint64_t start_gpa,
             int fd = memory_region_get_fd(&vmem->memdev->mr);
             Error *local_err = NULL;
 
-            os_mem_prealloc(fd, area, size, 1, &local_err);
+            qemu_prealloc_mem(fd, area, size, 1, NULL, &local_err);
             if (local_err) {
                 static bool warned;
 
@@ -867,8 +867,7 @@ static void virtio_mem_device_realize(DeviceState *dev, Error **errp)
                         vmem->block_size;
     vmem->bitmap = bitmap_new(vmem->bitmap_size);
 
-    virtio_init(vdev, TYPE_VIRTIO_MEM, VIRTIO_ID_MEM,
-                sizeof(struct virtio_mem_config));
+    virtio_init(vdev, VIRTIO_ID_MEM, sizeof(struct virtio_mem_config));
     vmem->vq = virtio_add_queue(vdev, 128, virtio_mem_handle_request);
 
     host_memory_backend_set_mapped(vmem->memdev, true);
@@ -1095,12 +1094,9 @@ static void virtio_mem_set_requested_size(Object *obj, Visitor *v,
                                           Error **errp)
 {
     VirtIOMEM *vmem = VIRTIO_MEM(obj);
-    Error *err = NULL;
     uint64_t value;
 
-    visit_type_size(v, name, &value, &err);
-    if (err) {
-        error_propagate(errp, err);
+    if (!visit_type_size(v, name, &value, errp)) {
         return;
     }
 
@@ -1160,7 +1156,6 @@ static void virtio_mem_set_block_size(Object *obj, Visitor *v, const char *name,
                                       void *opaque, Error **errp)
 {
     VirtIOMEM *vmem = VIRTIO_MEM(obj);
-    Error *err = NULL;
     uint64_t value;
 
     if (DEVICE(obj)->realized) {
@@ -1168,9 +1163,7 @@ static void virtio_mem_set_block_size(Object *obj, Visitor *v, const char *name,
         return;
     }
 
-    visit_type_size(v, name, &value, &err);
-    if (err) {
-        error_propagate(errp, err);
+    if (!visit_type_size(v, name, &value, errp)) {
         return;
     }
 

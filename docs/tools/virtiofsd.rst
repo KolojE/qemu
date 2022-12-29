@@ -132,7 +132,7 @@ Options
 .. option:: --thread-pool-size=NUM
 
   Restrict the number of worker threads per request queue to NUM.  The default
-  is 64.
+  is 0.
 
 .. option:: --cache=none|auto|always
 
@@ -232,7 +232,7 @@ e.g.:
 
   ``:ok:server::security.:``
 
-  will pass 'securty.' xattr's in listxattr from the server
+  will pass 'security.' xattr's in listxattr from the server
   and ignore following rules.
 
   ``:ok:all:::``

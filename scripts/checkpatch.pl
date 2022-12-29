@@ -1667,6 +1667,7 @@ sub process {
 # some scripts we imported from other projects.
 		next if ($realfile =~ /\.(s|S)$/);
 		next if ($realfile =~ /(checkpatch|get_maintainer)\.pl$/);
+		next if ($realfile =~ /^target\/hexagon\/imported\/*/);
 
 		if ($rawline =~ /^\+.*\t/) {
 			my $herevet = "$here\n" . cat_vet($rawline) . "\n";
@@ -1680,8 +1681,10 @@ sub process {
 # Block comment styles
 
 		# Block comments use /* on a line of its own
-		if ($rawline !~ m@^\+.*/\*.*\*/[ \t)}]*$@ &&	#inline /*...*/
-		    $rawline =~ m@^\+.*/\*\*?+[ \t]*[^ \t]@) { # /* or /** non-blank
+		my $commentline = $rawline;
+		while ($commentline =~ s@^(\+.*)/\*.*\*/@$1@o) { # remove inline /*...*/
+		}
+		if ($commentline =~ m@^\+.*/\*\*?+[ \t]*[^ \t]@) { # /* or /** non-blank
 			WARN("Block comments use a leading /* on a separate line\n" . $herecurr);
 		}
 
@@ -2831,8 +2834,8 @@ sub process {
 		}
 
 # check for pointless casting of g_malloc return
-		if ($line =~ /\*\s*\)\s*g_(try)?(m|re)alloc(0?)(_n)?\b/) {
-			if ($2 == 'm') {
+		if ($line =~ /\*\s*\)\s*g_(try|)(m|re)alloc(0?)(_n)?\b/) {
+			if ($2 eq 'm') {
 				ERROR("unnecessary cast may hide bugs, use g_$1new$3 instead\n" . $herecurr);
 			} else {
 				ERROR("unnecessary cast may hide bugs, use g_$1renew$3 instead\n" . $herecurr);

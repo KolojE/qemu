@@ -10,7 +10,7 @@
 #include "qemu/osdep.h"
 #include <glib/gstdio.h>
 #include "libqos/libqos-pc.h"
-#include "libqos/libqtest.h"
+#include "libqtest.h"
 
 #include "hw/pci/pci.h"
 
@@ -154,10 +154,7 @@ static void test_acpi_erst_basic(void)
 
 int main(int argc, char **argv)
 {
-    int ret;
-
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/acpi-erst/basic", test_acpi_erst_basic);
-    ret = g_test_run();
-    return ret;
+    return g_test_run();
 }

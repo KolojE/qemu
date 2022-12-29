@@ -24,10 +24,6 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
- *
- * The implementation of g_poll (functions poll_rest, g_poll) at the end of
- * this file are based on code from GNOME glib-2 and use a different license,
- * see the license comment there.
  */
 
 #include "qemu/osdep.h"
@@ -39,9 +35,6 @@
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
 #include <malloc.h>
-
-/* this must come after including "trace.h" */
-#include <shlobj.h>
 
 static int get_allocation_granularity(void)
 {
@@ -184,14 +177,14 @@ static int socket_error(void)
     }
 }
 
-void qemu_set_block(int fd)
+void qemu_socket_set_block(int fd)
 {
     unsigned long opt = 0;
     WSAEventSelect(fd, NULL, 0);
     ioctlsocket(fd, FIONBIO, &opt);
 }
 
-int qemu_try_set_nonblock(int fd)
+int qemu_socket_try_set_nonblock(int fd)
 {
     unsigned long opt = 1;
     if (ioctlsocket(fd, FIONBIO, &opt) != NO_ERROR) {
@@ -200,9 +193,9 @@ int qemu_try_set_nonblock(int fd)
     return 0;
 }
 
-void qemu_set_nonblock(int fd)
+void qemu_socket_set_nonblock(int fd)
 {
-    (void)qemu_try_set_nonblock(fd);
+    (void)qemu_socket_try_set_nonblock(fd);
 }
 
 int socket_set_fast_reuse(int fd)
@@ -237,17 +230,11 @@ int qemu_get_thread_id(void)
 char *
 qemu_get_local_state_dir(void)
 {
-    HRESULT result;
-    char base_path[MAX_PATH+1] = "";
+    const char * const *data_dirs = g_get_system_data_dirs();
 
-    result = SHGetFolderPath(NULL, CSIDL_COMMON_APPDATA, NULL,
-                             /* SHGFP_TYPE_CURRENT */ 0, base_path);
-    if (result != S_OK) {
-        /* misconfigured environment */
-        g_critical("CSIDL_COMMON_APPDATA unavailable: %ld", (long)result);
-        abort();
-    }
-    return g_strdup(base_path);
+    g_assert(data_dirs && data_dirs[0]);
+
+    return g_strdup(data_dirs[0]);
 }
 
 void qemu_set_tty_echo(int fd, bool echo)
@@ -269,42 +256,6 @@ void qemu_set_tty_echo(int fd, bool echo)
     }
 }
 
-static const char *exec_dir;
-
-void qemu_init_exec_dir(const char *argv0)
-{
-
-    char *p;
-    char buf[MAX_PATH];
-    DWORD len;
-
-    if (exec_dir) {
-        return;
-    }
-
-    len = GetModuleFileName(NULL, buf, sizeof(buf) - 1);
-    if (len == 0) {
-        return;
-    }
-
-    buf[len] = 0;
-    p = buf + len - 1;
-    while (p != buf && *p != '\\') {
-        p--;
-    }
-    *p = 0;
-    if (access(buf, R_OK) == 0) {
-        exec_dir = g_strdup(buf);
-    } else {
-        exec_dir = CONFIG_BINDIR;
-    }
-}
-
-const char *qemu_get_exec_dir(void)
-{
-    return exec_dir;
-}
-
 int getpagesize(void)
 {
     SYSTEM_INFO system_info;
@@ -313,14 +264,14 @@ int getpagesize(void)
     return system_info.dwPageSize;
 }
 
-void os_mem_prealloc(int fd, char *area, size_t memory, int smp_cpus,
-                     Error **errp)
+void qemu_prealloc_mem(int fd, char *area, size_t sz, int max_threads,
+                       ThreadContext *tc, Error **errp)
 {
     int i;
     size_t pagesize = qemu_real_host_page_size();
 
-    memory = (memory + pagesize - 1) & -pagesize;
-    for (i = 0; i < memory / pagesize; i++) {
+    sz = (sz + pagesize - 1) & -pagesize;
+    for (i = 0; i < sz / pagesize; i++) {
         memset(area + pagesize * i, 0, 1);
     }
 }

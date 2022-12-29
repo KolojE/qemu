@@ -669,7 +669,7 @@ void tcg_iommu_init_notifier_list(CPUState *cpu)
 
 /* Called from RCU critical section */
 MemoryRegionSection *
-address_space_translate_for_iotlb(CPUState *cpu, int asidx, hwaddr addr,
+address_space_translate_for_iotlb(CPUState *cpu, int asidx, hwaddr orig_addr,
                                   hwaddr *xlat, hwaddr *plen,
                                   MemTxAttrs attrs, int *prot)
 {
@@ -678,6 +678,7 @@ address_space_translate_for_iotlb(CPUState *cpu, int asidx, hwaddr addr,
     IOMMUMemoryRegionClass *imrc;
     IOMMUTLBEntry iotlb;
     int iommu_idx;
+    hwaddr addr = orig_addr;
     AddressSpaceDispatch *d =
         qatomic_rcu_read(&cpu->cpu_ases[asidx].memory_dispatch);
 
@@ -722,6 +723,16 @@ address_space_translate_for_iotlb(CPUState *cpu, int asidx, hwaddr addr,
     return section;
 
 translate_fail:
+    /*
+     * We should be given a page-aligned address -- certainly
+     * tlb_set_page_with_attrs() does so.  The page offset of xlat
+     * is used to index sections[], and PHYS_SECTION_UNASSIGNED = 0.
+     * The page portion of xlat will be logged by memory_region_access_valid()
+     * when this memory access is rejected, so use the original untranslated
+     * physical address.
+     */
+    assert((orig_addr & ~TARGET_PAGE_MASK) == 0);
+    *xlat = orig_addr;
     return &d->map.sections[PHYS_SECTION_UNASSIGNED];
 }
 
@@ -1320,13 +1331,6 @@ GString *ram_block_format(void)
     return buf;
 }
 
-#ifdef __linux__
-/*
- * FIXME TOCTTOU: this iterates over memory backends' mem-path, which
- * may or may not name the same files / on the same filesystem now as
- * when we actually open and map them.  Iterate over the file
- * descriptors instead, and use qemu_fd_getpagesize().
- */
 static int find_min_backend_pagesize(Object *obj, void *opaque)
 {
     long *hpsize_min = opaque;
@@ -1380,16 +1384,6 @@ long qemu_maxrampagesize(void)
     object_child_foreach(memdev_root, find_max_backend_pagesize, &pagesize);
     return pagesize;
 }
-#else
-long qemu_minrampagesize(void)
-{
-    return qemu_real_host_page_size();
-}
-long qemu_maxrampagesize(void)
-{
-    return qemu_real_host_page_size();
-}
-#endif
 
 #ifdef CONFIG_POSIX
 static int64_t get_file_size(int fd)
@@ -1752,6 +1746,11 @@ void qemu_ram_set_migratable(RAMBlock *rb)
 void qemu_ram_unset_migratable(RAMBlock *rb)
 {
     rb->flags &= ~RAM_MIGRATABLE;
+}
+
+int qemu_ram_get_fd(RAMBlock *rb)
+{
+    return rb->fd;
 }
 
 /* Called with iothread lock held.  */
@@ -2449,6 +2448,18 @@ ram_addr_t qemu_ram_addr_from_host(void *ptr)
     return block->offset + offset;
 }
 
+ram_addr_t qemu_ram_addr_from_host_nofail(void *ptr)
+{
+    ram_addr_t ram_addr;
+
+    ram_addr = qemu_ram_addr_from_host(ptr);
+    if (ram_addr == RAM_ADDR_INVALID) {
+        error_report("Bad ram pointer %p", ptr);
+        abort();
+    }
+    return ram_addr;
+}
+
 static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
                                  MemTxAttrs attrs, void *buf, hwaddr len);
 static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
@@ -2719,7 +2730,7 @@ void memory_region_flush_rom_device(MemoryRegion *mr, hwaddr addr, hwaddr size)
     invalidate_and_set_dirty(mr, addr, size);
 }
 
-static int memory_access_size(MemoryRegion *mr, unsigned l, hwaddr addr)
+int memory_access_size(MemoryRegion *mr, unsigned l, hwaddr addr)
 {
     unsigned access_size_max = mr->ops->valid.max_access_size;
 
@@ -2746,7 +2757,7 @@ static int memory_access_size(MemoryRegion *mr, unsigned l, hwaddr addr)
     return l;
 }
 
-static bool prepare_mmio_access(MemoryRegion *mr)
+bool prepare_mmio_access(MemoryRegion *mr)
 {
     bool release_lock = false;
 
@@ -3225,7 +3236,6 @@ void *address_space_map(AddressSpace *as,
     hwaddr len = *plen;
     hwaddr l, xlat;
     MemoryRegion *mr;
-    void *ptr;
     FlatView *fv;
 
     if (len == 0) {
@@ -3264,9 +3274,7 @@ void *address_space_map(AddressSpace *as,
     *plen = flatview_extend_translation(fv, addr, len, mr, xlat,
                                         l, is_write, attrs);
     fuzz_dma_read_cb(addr, *plen, mr);
-    ptr = qemu_ram_ptr_length(mr->ram_block, xlat, plen, true);
-
-    return ptr;
+    return qemu_ram_ptr_length(mr->ram_block, xlat, plen, true);
 }
 
 /* Unmaps a memory region previously mapped by address_space_map().
@@ -3534,15 +3542,13 @@ bool cpu_physical_memory_is_io(hwaddr phys_addr)
 {
     MemoryRegion*mr;
     hwaddr l = 1;
-    bool res;
 
     RCU_READ_LOCK_GUARD();
     mr = address_space_translate(&address_space_memory,
                                  phys_addr, &phys_addr, &l, false,
                                  MEMTXATTRS_UNSPECIFIED);
 
-    res = !(memory_region_is_ram(mr) || memory_region_is_romd(mr));
-    return res;
+    return !(memory_region_is_ram(mr) || memory_region_is_romd(mr));
 }
 
 int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque)
@@ -3701,7 +3707,7 @@ void mtree_print_dispatch(AddressSpaceDispatch *d, MemoryRegion *root)
                     " %s%s%s%s%s",
             i,
             s->offset_within_address_space,
-            s->offset_within_address_space + MR_SIZE(s->mr->size),
+            s->offset_within_address_space + MR_SIZE(s->size),
             s->mr->name ? s->mr->name : "(noname)",
             i < ARRAY_SIZE(names) ? names[i] : "",
             s->mr == root ? " [ROOT]" : "",

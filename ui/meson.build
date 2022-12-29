@@ -2,6 +2,7 @@ softmmu_ss.add(pixman)
 specific_ss.add(when: ['CONFIG_SOFTMMU'], if_true: pixman)   # for the include path
 specific_ss.add(when: ['CONFIG_SOFTMMU'], if_true: opengl)   # for the include path
 
+softmmu_ss.add(png)
 softmmu_ss.add(files(
   'clipboard.c',
   'console.c',
@@ -40,7 +41,7 @@ vnc_ss.add(files(
   'vnc-jobs.c',
   'vnc-clipboard.c',
 ))
-vnc_ss.add(zlib, png, jpeg, gnutls)
+vnc_ss.add(zlib, jpeg, gnutls)
 vnc_ss.add(when: sasl, if_true: files('vnc-auth-sasl.c'))
 softmmu_ss.add_all(when: vnc, if_true: vnc_ss)
 softmmu_ss.add(when: vnc, if_false: files('vnc-stubs.c'))
@@ -80,7 +81,7 @@ if dbus_display
                                           '--interface-prefix', 'org.qemu.',
                                           '--c-namespace', 'QemuDBus',
                                           '--generate-c-code', '@BASENAME@'])
-  dbus_ss.add(when: [gio, pixman, opengl],
+  dbus_ss.add(when: [gio, pixman, opengl, gbm],
               if_true: [files(
                 'dbus-chardev.c',
                 'dbus-clipboard.c',
@@ -96,7 +97,10 @@ if gtk.found()
   softmmu_ss.add(when: 'CONFIG_WIN32', if_true: files('win32-kbd-hook.c'))
 
   gtk_ss = ss.source_set()
-  gtk_ss.add(gtk, vte, pixman, files('gtk.c', 'gtk-clipboard.c'))
+  gtk_ss.add(gtk, vte, pixman, files('gtk.c'))
+  if have_gtk_clipboard
+    gtk_ss.add(files('gtk-clipboard.c'))
+  endif
   gtk_ss.add(when: x11, if_true: files('x_keymap.c'))
   gtk_ss.add(when: opengl, if_true: files('gtk-gl-area.c'))
   gtk_ss.add(when: [x11, opengl], if_true: files('gtk-egl.c'))

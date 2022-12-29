@@ -584,7 +584,11 @@ static bool trans_VLD_all_lanes(DisasContext *s, arg_VLD_all_lanes *a)
         case 3:
             return false;
         case 4:
-            align = pow2_align(size + 2);
+            if (size == 2) {
+                align = pow2_align(3);
+            } else {
+                align = pow2_align(size + 2);
+            }
             break;
         default:
             g_assert_not_reached();
@@ -679,7 +683,7 @@ static bool trans_VLDST_single(DisasContext *s, arg_VLDST_single *a)
         }
         break;
     default:
-        abort();
+        g_assert_not_reached();
     }
     if ((vd + a->stride * (nregs - 1)) > 31) {
         /*

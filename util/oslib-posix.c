@@ -42,29 +42,21 @@
 #include "qemu/cutils.h"
 #include "qemu/compiler.h"
 #include "qemu/units.h"
+#include "qemu/thread-context.h"
 
 #ifdef CONFIG_LINUX
 #include <sys/syscall.h>
 #endif
 
 #ifdef __FreeBSD__
-#include <sys/sysctl.h>
-#include <sys/user.h>
 #include <sys/thr.h>
+#include <sys/types.h>
+#include <sys/user.h>
 #include <libutil.h>
 #endif
 
 #ifdef __NetBSD__
-#include <sys/sysctl.h>
 #include <lwp.h>
-#endif
-
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#endif
-
-#ifdef __HAIKU__
-#include <kernel/image.h>
 #endif
 
 #include "qemu/mmap-alloc.h"
@@ -224,32 +216,20 @@ void qemu_anon_ram_free(void *ptr, size_t size)
     qemu_ram_munmap(-1, ptr, size);
 }
 
-void qemu_set_block(int fd)
+void qemu_socket_set_block(int fd)
 {
-    int f;
-    f = fcntl(fd, F_GETFL);
-    assert(f != -1);
-    f = fcntl(fd, F_SETFL, f & ~O_NONBLOCK);
-    assert(f != -1);
+    g_unix_set_fd_nonblocking(fd, false, NULL);
 }
 
-int qemu_try_set_nonblock(int fd)
+int qemu_socket_try_set_nonblock(int fd)
 {
-    int f;
-    f = fcntl(fd, F_GETFL);
-    if (f == -1) {
-        return -errno;
-    }
-    if (fcntl(fd, F_SETFL, f | O_NONBLOCK) == -1) {
-        return -errno;
-    }
-    return 0;
+    return g_unix_set_fd_nonblocking(fd, true, NULL) ? 0 : -errno;
 }
 
-void qemu_set_nonblock(int fd)
+void qemu_socket_set_nonblock(int fd)
 {
     int f;
-    f = qemu_try_set_nonblock(fd);
+    f = qemu_socket_try_set_nonblock(fd);
     assert(f == 0);
 }
 
@@ -274,23 +254,20 @@ void qemu_set_cloexec(int fd)
     assert(f != -1);
 }
 
-/*
- * Creates a pipe with FD_CLOEXEC set on both file descriptors
- */
-int qemu_pipe(int pipefd[2])
+int qemu_socketpair(int domain, int type, int protocol, int sv[2])
 {
     int ret;
 
-#ifdef CONFIG_PIPE2
-    ret = pipe2(pipefd, O_CLOEXEC);
-    if (ret != -1 || errno != ENOSYS) {
+#ifdef SOCK_CLOEXEC
+    ret = socketpair(domain, type | SOCK_CLOEXEC, protocol, sv);
+    if (ret != -1 || errno != EINVAL) {
         return ret;
     }
 #endif
-    ret = pipe(pipefd);
+    ret = socketpair(domain, type, protocol, sv);;
     if (ret == 0) {
-        qemu_set_cloexec(pipefd[0]);
-        qemu_set_cloexec(pipefd[1]);
+        qemu_set_cloexec(sv[0]);
+        qemu_set_cloexec(sv[1]);
     }
 
     return ret;
@@ -315,87 +292,6 @@ void qemu_set_tty_echo(int fd, bool echo)
     }
 
     tcsetattr(fd, TCSANOW, &tty);
-}
-
-static const char *exec_dir;
-
-void qemu_init_exec_dir(const char *argv0)
-{
-    char *p = NULL;
-    char buf[PATH_MAX];
-
-    if (exec_dir) {
-        return;
-    }
-
-#if defined(__linux__)
-    {
-        int len;
-        len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-        if (len > 0) {
-            buf[len] = 0;
-            p = buf;
-        }
-    }
-#elif defined(__FreeBSD__) \
-      || (defined(__NetBSD__) && defined(KERN_PROC_PATHNAME))
-    {
-#if defined(__FreeBSD__)
-        static int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
-#else
-        static int mib[4] = {CTL_KERN, KERN_PROC_ARGS, -1, KERN_PROC_PATHNAME};
-#endif
-        size_t len = sizeof(buf) - 1;
-
-        *buf = '\0';
-        if (!sysctl(mib, ARRAY_SIZE(mib), buf, &len, NULL, 0) &&
-            *buf) {
-            buf[sizeof(buf) - 1] = '\0';
-            p = buf;
-        }
-    }
-#elif defined(__APPLE__)
-    {
-        char fpath[PATH_MAX];
-        uint32_t len = sizeof(fpath);
-        if (_NSGetExecutablePath(fpath, &len) == 0) {
-            p = realpath(fpath, buf);
-            if (!p) {
-                return;
-            }
-        }
-    }
-#elif defined(__HAIKU__)
-    {
-        image_info ii;
-        int32_t c = 0;
-
-        *buf = '\0';
-        while (get_next_image_info(0, &c, &ii) == B_OK) {
-            if (ii.type == B_APP_IMAGE) {
-                strncpy(buf, ii.name, sizeof(buf));
-                buf[sizeof(buf) - 1] = 0;
-                p = buf;
-                break;
-            }
-        }
-    }
-#endif
-    /* If we don't have any way of figuring out the actual executable
-       location then try argv[0].  */
-    if (!p && argv0) {
-        p = realpath(argv0, buf);
-    }
-    if (p) {
-        exec_dir = g_path_get_dirname(p);
-    } else {
-        exec_dir = CONFIG_BINDIR;
-    }
-}
-
-const char *qemu_get_exec_dir(void)
-{
-    return exec_dir;
 }
 
 #ifdef CONFIG_LINUX
@@ -434,7 +330,7 @@ static void sigbus_handler(int signal)
         return;
     }
 #endif /* CONFIG_LINUX */
-    warn_report("os_mem_prealloc: unrelated SIGBUS detected and ignored");
+    warn_report("qemu_prealloc_mem: unrelated SIGBUS detected and ignored");
 }
 
 static void *do_touch_pages(void *arg)
@@ -504,13 +400,13 @@ static void *do_madv_populate_write_pages(void *arg)
 }
 
 static inline int get_memset_num_threads(size_t hpagesize, size_t numpages,
-                                         int smp_cpus)
+                                         int max_threads)
 {
     long host_procs = sysconf(_SC_NPROCESSORS_ONLN);
     int ret = 1;
 
     if (host_procs > 0) {
-        ret = MIN(MIN(host_procs, MAX_MEM_PREALLOC_THREAD_COUNT), smp_cpus);
+        ret = MIN(MIN(host_procs, MAX_MEM_PREALLOC_THREAD_COUNT), max_threads);
     }
 
     /* Especially with gigantic pages, don't create more threads than pages. */
@@ -523,11 +419,12 @@ static inline int get_memset_num_threads(size_t hpagesize, size_t numpages,
 }
 
 static int touch_all_pages(char *area, size_t hpagesize, size_t numpages,
-                           int smp_cpus, bool use_madv_populate_write)
+                           int max_threads, ThreadContext *tc,
+                           bool use_madv_populate_write)
 {
     static gsize initialized = 0;
     MemsetContext context = {
-        .num_threads = get_memset_num_threads(hpagesize, numpages, smp_cpus),
+        .num_threads = get_memset_num_threads(hpagesize, numpages, max_threads),
     };
     size_t numpages_per_thread, leftover;
     void *(*touch_fn)(void *);
@@ -562,9 +459,16 @@ static int touch_all_pages(char *area, size_t hpagesize, size_t numpages,
         context.threads[i].numpages = numpages_per_thread + (i < leftover);
         context.threads[i].hpagesize = hpagesize;
         context.threads[i].context = &context;
-        qemu_thread_create(&context.threads[i].pgthread, "touch_pages",
-                           touch_fn, &context.threads[i],
-                           QEMU_THREAD_JOINABLE);
+        if (tc) {
+            thread_context_create_thread(tc, &context.threads[i].pgthread,
+                                         "touch_pages",
+                                         touch_fn, &context.threads[i],
+                                         QEMU_THREAD_JOINABLE);
+        } else {
+            qemu_thread_create(&context.threads[i].pgthread, "touch_pages",
+                               touch_fn, &context.threads[i],
+                               QEMU_THREAD_JOINABLE);
+        }
         addr += context.threads[i].numpages * hpagesize;
     }
 
@@ -599,13 +503,13 @@ static bool madv_populate_write_possible(char *area, size_t pagesize)
            errno != EINVAL;
 }
 
-void os_mem_prealloc(int fd, char *area, size_t memory, int smp_cpus,
-                     Error **errp)
+void qemu_prealloc_mem(int fd, char *area, size_t sz, int max_threads,
+                       ThreadContext *tc, Error **errp)
 {
     static gsize initialized;
     int ret;
     size_t hpagesize = qemu_fd_getpagesize(fd);
-    size_t numpages = DIV_ROUND_UP(memory, hpagesize);
+    size_t numpages = DIV_ROUND_UP(sz, hpagesize);
     bool use_madv_populate_write;
     struct sigaction act;
 
@@ -635,24 +539,24 @@ void os_mem_prealloc(int fd, char *area, size_t memory, int smp_cpus,
         if (ret) {
             qemu_mutex_unlock(&sigbus_mutex);
             error_setg_errno(errp, errno,
-                "os_mem_prealloc: failed to install signal handler");
+                "qemu_prealloc_mem: failed to install signal handler");
             return;
         }
     }
 
     /* touch pages simultaneously */
-    ret = touch_all_pages(area, hpagesize, numpages, smp_cpus,
+    ret = touch_all_pages(area, hpagesize, numpages, max_threads, tc,
                           use_madv_populate_write);
     if (ret) {
         error_setg_errno(errp, -ret,
-                         "os_mem_prealloc: preallocating memory failed");
+                         "qemu_prealloc_mem: preallocating memory failed");
     }
 
     if (!use_madv_populate_write) {
         ret = sigaction(SIGBUS, &sigbus_oldact, NULL);
         if (ret) {
             /* Terminate QEMU since it can't recover from error */
-            perror("os_mem_prealloc: failed to reinstall signal handler");
+            perror("qemu_prealloc_mem: failed to reinstall signal handler");
             exit(1);
         }
         qemu_mutex_unlock(&sigbus_mutex);
@@ -894,21 +798,6 @@ size_t qemu_get_host_physmem(void)
         }
     }
 #endif
-    return 0;
-}
-
-/* Sets a specific flag */
-int fcntl_setfl(int fd, int flag)
-{
-    int flags;
-
-    flags = fcntl(fd, F_GETFL);
-    if (flags == -1) {
-        return -errno;
-    }
-    if (fcntl(fd, F_SETFL, flags | flag) == -1) {
-        return -errno;
-    }
     return 0;
 }
 
